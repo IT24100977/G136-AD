@@ -1,153 +1,167 @@
-# RideLink: Backend Microservices for a Ride-Sharing Platform
+# Driver & Vehicle Service: RideLink
 
-IT3130 Application Development, Group Assignment. Backend only: Swagger UI and the Postman collection are the official interfaces.
+Manages the driver's operational profile, vehicle details, availability, service area and simulated current location, and answers the "which drivers are eligible for this pickup?" query used by Ride Management.
 
-| **Release tag:** [v1.0.0]
+| |                                                                                                                        |
+|---|------------------------------------------------------------------------------------------------------------------------|
+| **Primary owner** | [Member 2 name]                                                                                                        |
+| **Port** | 8081                                                                                                                   |
+| **Database** | MongoDB `driver_db` (collection `driver_profiles`), private to this service                                            |
+| **Tech** | Java 21, Spring Boot 4.1.1, Spring Web, Spring Data MongoDB, Spring Security (JWT), Bean Validation, springdoc-openapi |
 
-## Service owners
+## Role in the system
 
-| Service | Primary owner | Port | Database | Folder |
-|---|---|------|---|---|
-| Account Service | [Member 1 name] | 8081 | PostgreSQL `account_db` | `account-service/` |
-| Driver & Vehicle Service | [Member 2 name] | 8081 | MongoDB `driver_db` | `driver-service/` |
-| Ride Management Service | [Member 3 name] | 8082 | PostgreSQL `ride_db` | `ride-service/` |
-| Fare & Payment Service | [Member 4 name] | 8083 | PostgreSQL `fare_db` | `fare-payment-service/` |
-
-Each service owns its own database. No service reads or writes another service's data; they talk only through REST APIs.
-
-## Architecture in one minute
-
-- **Account** is the only service that issues JWTs. The other three validate the token locally with the same shared secret.
-- **Ride Management** orchestrates the booking. It calls **Driver & Vehicle** (eligible drivers, driver availability) and **Fare & Payment** (estimate, final fare, simulated payment) over synchronous REST.
-- Ride Management uses a short-lived service token (role ADMIN, subject `ride-service`) for those outbound calls.
-- Details, diagrams and the communication comparison are in the technical report.
-
-## Repository layout
-
-```
-ridelink/
-  account-service/
-  driver-service/
-  ride-service/
-  fare-payment-service/
-  postman/                  exported collection and environment
-  .github/workflows/        one CI workflow per service
-  README.md                 this file
-```
+- Validates JWTs locally with the shared secret. It never calls the Account Service.
+- A driver's id **is** their account id (the JWT `sub`). It is a reference to the Account Service, not a foreign key.
+- It is called by the **Ride Management Service** (eligible drivers, set `ON_TRIP` / `AVAILABLE`) and by drivers themselves. It calls no other service.
 
 ## Prerequisites
 
 - JDK 21 or newer, Maven
-- PostgreSQL (for Account, Ride and Fare)
-- MongoDB (for Driver), for example `docker run -d -p 27017:27017 --name mongo mongo:7`
-- Postman (optional, for the collection)
+- MongoDB running locally, for example `docker run -d -p 27017:27017 --name mongo mongo:7`
+
+`driver_db` is created automatically on the first write.
 
 ## Configuration
 
-Every service has an `.env.example`. Copy it to `.env` or set the same variables in your IDE run configuration. **Never commit real values.**
+Copy `.env.example` to `.env`, or set the same variables in your IDE run configuration. **Never commit real values.**
 
-| Variable | Used by | Meaning |
+| Variable | Purpose | Example |
 |---|---|---|
-| `JWT_SECRET` | all four | Long random string. **Must be identical in all four services.** There is no default. |
-| `JWT_EXPIRATION_MS` | Account | Token lifetime, default 86400000 (24 hours) |
-| `DB_URL`, `DB_USER`, `DB_PASSWORD` | Account, Ride, Fare | PostgreSQL connection |
-| `MONGO_URI` | Driver | MongoDB connection string |
-| `DRIVER_SERVICE_URL` | Ride | default `http://localhost:8082` |
-| `FARE_SERVICE_URL` | Ride | default `http://localhost:8084` |
-| `PAYMENT_MAX_AMOUNT` | Fare | Simulated payment limit, default 50000 |
-| `INCLUDE_ERROR_CAUSE` | Ride | Dev switch. Keep `false` for the demo. |
+| `MONGO_URI` | Mongo connection string | `mongodb://localhost:27017/driver_db` |
+| `JWT_SECRET` | Shared signing secret, **identical in all four services**. No default, so the service will not start without it. | (long random string agreed by the group) |
 
-Create the PostgreSQL databases once:
+Business settings in `application.properties`: `app.driver.default-radius-km=5` and `app.driver.max-location-age-minutes=30`.
 
-```sql
-CREATE DATABASE account_db;
-CREATE DATABASE ride_db;
-CREATE DATABASE fare_db;
-```
+The port is `server.port=8082`. If your group uses different ports, change this one line and make sure the Ride service's `DRIVER_SERVICE_URL` points to it.
 
-MongoDB creates `driver_db` automatically on first write.
-
-## Start-up order
-
-1. PostgreSQL and MongoDB running
-2. Account Service (8081)
-3. Driver & Vehicle Service (8082)
-4. Fare & Payment Service (8084)
-5. Ride Management Service (8083)
-
-In each service folder:
+## Run and test
 
 ```bash
-mvn spring-boot:run
+mvn spring-boot:run     # start the service
+mvn test                # 9 unit tests, no database needed
 ```
 
-## Swagger UI (OpenAPI documentation)
+- Swagger UI: http://localhost:8081/swagger-ui.html
+- OpenAPI JSON: http://localhost:8081/v3/api-docs
 
-| Service | Swagger UI                            |
-|---|---------------------------------------|
-| Account | http://localhost:8080/swagger-ui.html |
-| Driver & Vehicle | http://localhost:8081/swagger-ui.html |
-| Ride Management | http://localhost:8082/swagger-ui.html |
-| Fare & Payment | http://localhost:8083/swagger-ui.html |
+In Swagger, log in through the Account Service, click **Authorize**, and paste the JWT.
 
-OpenAPI JSON is at `/v3/api-docs` on each service. Use the **Authorize** button and paste a JWT from login.
+## Endpoints
 
-## Sample test data (fictional)
+| Method | Path | Access | Description |
+|---|---|---|---|
+| POST | `/drivers` | DRIVER | Create the caller's own profile (id taken from the JWT) |
+| GET | `/drivers/{id}` | Authenticated | View a driver |
+| PUT | `/drivers/{id}` | Owner DRIVER or ADMIN | Update licence number and service area |
+| PUT | `/drivers/{id}/vehicle` | Owner DRIVER | Register or replace the vehicle |
+| PATCH | `/drivers/{id}/availability` | Owner DRIVER or ADMIN | `OFFLINE`, `AVAILABLE` or `ON_TRIP` |
+| PUT | `/drivers/{id}/location` | Owner DRIVER | Set simulated latitude and longitude |
+| GET | `/drivers/eligible?lat&lng&radiusKm&vehicleType&serviceArea&limit` | Authenticated | Nearest eligible drivers |
 
-| Role | Email | Password |
-|---|---|---|
-| Passenger | `passenger1@example.com` | `password123` |
-| Passenger (second) | `passenger2@example.com` | `password123` |
-| Driver | `driver1@example.com` | `password123` |
-| Admin | `admin1@example.com` | `password123` |
+"Owner" means the `{id}` in the path must equal the caller's account id. ADMIN is also used by the Ride service's short-lived service token when it reserves or releases a driver.
 
-Create them with `POST /accounts/register`, then log in with `POST /accounts/login`. [Describe here how the admin account is created if public ADMIN registration is disabled.]
+## Request examples
 
-Sample coordinates (Colombo): pickup Fort `6.9271, 79.8612`, destination Mount Lavinia `6.8389, 79.8653`, driver location `6.9275, 79.8620`.
+Send each body as `Content-Type: application/json`.
 
-## Running the tests
+**`POST /drivers`**
 
-Unit tests need no database or running service. In each service folder:
-
-```bash
-mvn test
+```json
+{
+  "licenseNumber": "LIC-100001",
+  "serviceArea": "Colombo"
+}
 ```
 
-Integrated tests: import `postman/RideLink.postman_collection.json` and `postman/RideLink.postman_environment.json` into Postman, set the four service URLs in the environment, start all four services, and run the collection in order (setup, driver preparation, fare, ride lifecycle, negative scenarios).
+**`PUT /drivers/{id}/vehicle`**
 
-## Main workflow (manual)
+```json
+{
+  "plateNumber": "WP-CAB-1234",
+  "make": "Toyota",
+  "model": "Prius",
+  "color": "White",
+  "seats": 4,
+  "type": "CAR"
+}
+```
 
-1. Register and log in as passenger and driver.
-2. Driver: `POST /drivers`, `PUT /drivers/{id}/vehicle`, `PUT /drivers/{id}/location`, `PATCH /drivers/{id}/availability` with `AVAILABLE`.
-3. Passenger: `POST /fares/estimate`, then `POST /rides`.
-4. Driver: `PATCH /rides/{id}/accept`, `/start`, `/complete`.
-5. Passenger: `GET /payments/ride/{rideId}` and `GET /payments/{id}/receipt`.
+**`PUT /drivers/{id}/location`**
 
-## Ride lifecycle
+```json
+{
+  "latitude": 6.9275,
+  "longitude": 79.8620
+}
+```
 
-`REQUESTED` to `ASSIGNED` to `ACCEPTED` to `IN_PROGRESS` to `COMPLETED`. `CANCELLED` is allowed from `REQUESTED`, `ASSIGNED` and `ACCEPTED`. Invalid transitions return 409.
+**`PATCH /drivers/{id}/availability`**
 
-## Negative scenarios demonstrated
+```json
+{
+  "status": "AVAILABLE"
+}
+```
 
-No available driver (409), invalid status transition (409), wrong role or non-participant (403), missing token (401), invalid input (400), unknown resource (404), failed simulated payment (ride stays COMPLETED with `paymentStatus` FAILED), Fare or Driver service unavailable (503).
+Vehicle types: `BIKE`, `TUK`, `CAR`, `VAN`.
 
-## Version control workflow
+## Data model
 
-- `main` always holds an integrated, demonstrable version and changes only through pull requests.
-- `develop` is the integration branch.
-- Work happens on feature branches named `feature/<service>-<topic>`, for example `feature/driver-eligible-query`.
-- Every pull request needs at least one review from another member and a passing CI check.
-- Commit messages are short and describe one change. The assessed version carries the release tag `[v1.0.0]`.
+One document per driver, with the vehicle embedded:
 
-## Continuous integration
+```json
+{
+  "_id": "9de3f560-becd-4a64-a90d-7a094d2f70b2",
+  "licenseNumber": "LIC-100001",
+  "serviceArea": "Colombo",
+  "status": "AVAILABLE",
+  "latitude": 6.9275,
+  "longitude": 79.8620,
+  "locationUpdatedAt": "2026-10-04T05:50:00Z",
+  "vehicle": { "plateNumber": "WP-CAB-1234", "make": "Toyota", "model": "Prius", "color": "White", "seats": 4, "type": "CAR" }
+}
+```
 
-Each service has a GitHub Actions workflow in `.github/workflows/` that builds it and runs its tests (`mvn -B clean verify`) on pushes and pull requests to `main` and `develop`.
+Unique indexes: `licenseNumber`, and `vehicle.plateNumber` (sparse, so drivers without a vehicle do not collide).
 
-## Service READMEs
+**Why MongoDB:** a driver and vehicle are one natural document, and availability and location change often and are read together. PostgreSQL was considered; it would also work but adds no benefit for this access pattern.
 
-Each service folder contains its own README with endpoints, rules and negative scenarios:
-[Account](account-service/README.md), [Driver & Vehicle](driver-service/README.md), [Ride Management](ride-service/README.md), [Fare & Payment](fare-payment-service/README.md).
+## Eligibility rule (documented)
 
-## Known limitations
+A driver is returned by `/drivers/eligible` only if all of these hold:
 
-Documented in Section 9 of the technical report: no atomic driver reservation, no distributed transactions, synchronous payment recording without retries, and a shared symmetric JWT secret.
+1. status is `AVAILABLE`
+2. a vehicle is registered
+3. the location was updated within the last 30 minutes
+4. the straight-line (Haversine) distance to the pickup is within `radiusKm` (default 5)
+5. (optional) the vehicle type and service area match the filters
+
+Results are sorted nearest first and capped by `limit` (default 5, maximum 20). A driver can only go `AVAILABLE` if a vehicle and a location exist.
+
+## Security
+
+- JWT bearer authentication; the role claim is `PASSENGER`, `DRIVER` or `ADMIN`.
+- Method-level rules with `@PreAuthorize`, including ownership checks (`#id == authentication.name`).
+- No secrets in the repository; configuration comes from environment variables.
+- Errors share one JSON shape: `timestamp`, `status`, `error`, `message`, `path`.
+
+## Negative scenarios
+
+| Scenario | Result |
+|---|---|
+| No or invalid token | 401 |
+| Passenger creates a driver profile, or changes a driver's vehicle or availability | 403 |
+| Driver edits another driver's data | 403 |
+| Duplicate profile, licence number or plate number | 409 |
+| Going `AVAILABLE` without a vehicle or a location | 409 |
+| Unknown driver id | 404 |
+| Invalid input (blank licence number, seats outside 1 to 12, latitude outside -90..90) | 400 |
+| Invalid eligible-drivers coordinates or radius | 400 |
+
+## Troubleshooting
+
+- **Service will not start, "Could not resolve placeholder JWT_SECRET":** the variable is not set. Set it in the run configuration or `.env`.
+- **Cannot connect to MongoDB:** check MongoDB is running on the URI in `MONGO_URI`.
+- **Eligible list is empty:** the driver must be `AVAILABLE`, have a vehicle, and have set a location in the last 30 minutes. Repeat the location call.
+- **401 from the Ride service's calls:** the JWT secret differs between services.
